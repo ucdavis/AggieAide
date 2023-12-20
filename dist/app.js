@@ -20,9 +20,34 @@ const app = new bolt_1.App({
     token: process.env.SLACK_BOT_TOKEN,
     signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
-// All the room in the world for your code
+app.command('/kb', ({ ack, payload, context, say }) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        yield ack();
+        const payloadText = payload.text;
+        if (!payloadText) {
+            yield say('You can ask me anything about the knowledge base. ex: /kb how to create a new user?');
+            return;
+        }
+        // send a message using chat.postMessage
+        const messageInitial = yield say('Querying the knowledge base...');
+        if (messageInitial.ok && messageInitial.ts) {
+            // wait 2 seconds and update the message using chat.update
+            yield new Promise((r) => setTimeout(r, 2000));
+            yield app.client.chat.update({
+                token: context.botToken,
+                channel: payload.channel_id,
+                ts: messageInitial.ts,
+                text: 'Hello world! (updated)',
+            });
+        }
+    }
+    catch (error) {
+        console.error(error);
+    }
+}));
 (() => __awaiter(void 0, void 0, void 0, function* () {
     // Start your app
-    yield app.start(process.env.PORT || 3000);
-    console.log('⚡️ Bolt app is running!');
+    const port = process.env.PORT || 3000;
+    yield app.start(port);
+    console.log(`⚡️ Bolt app is running at ${port}`);
 }))();
