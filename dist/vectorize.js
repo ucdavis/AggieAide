@@ -35,7 +35,10 @@ const config = {
 };
 const clientArgs = {
     client: new elasticsearch_1.Client(config),
-    indexName: (_b = process.env.ELASTIC_INDEX) !== null && _b !== void 0 ? _b : 'test_vectorstore2',
+    indexName: (_b = process.env.ELASTIC_INDEX) !== null && _b !== void 0 ? _b : 'test_vectorstore4',
+    vectorSearchOptions: {
+        similarity: 'cosine', // since this is what openAI uses
+    },
 };
 // const vectorStore = new ElasticVectorSearch(embeddings, clientArgs);
 const processIntoDocuments = (documents) => __awaiter(void 0, void 0, void 0, function* () {
@@ -51,12 +54,10 @@ const processIntoDocuments = (documents) => __awaiter(void 0, void 0, void 0, fu
     //   console.log('textOnly', textOnly, metadata);
     // split the documents into chunks
     // TODO: play with chunk size & overlap
-    const textSplitter = new text_splitter_1.RecursiveCharacterTextSplitter({
-        chunkSize: 256,
-        chunkOverlap: 20,
-    });
+    // TODO: this doesn't work too well with content in tables
+    const textSplitter = new text_splitter_1.RecursiveCharacterTextSplitter();
     const splitDocs = yield textSplitter.splitDocuments(processedDocuments);
-    console.log('storing in elastic');
+    console.log('storing in elastic split docs: ', splitDocs.length);
     // batch the splitDocs into 200 at a time
     const batchedSplitDocs = [];
     for (let i = 0; i < splitDocs.length; i += 200) {

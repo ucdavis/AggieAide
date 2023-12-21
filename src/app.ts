@@ -7,6 +7,15 @@ import {
   ElasticClientArgs,
   ElasticVectorSearch,
 } from 'langchain/vectorstores/elasticsearch';
+import { ChatOpenAI } from 'langchain/chat_models/openai';
+import { StringOutputParser } from 'langchain/schema/output_parser';
+import {
+  ChatPromptTemplate,
+  AIMessagePromptTemplate,
+  HumanMessagePromptTemplate,
+} from 'langchain/prompts';
+import { RunnableSequence } from 'langchain/schema/runnable';
+import { formatDocumentsAsString } from 'langchain/util/document';
 
 dotenv.config();
 
@@ -14,6 +23,19 @@ const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
+
+// let's try to do full RAG with OpenAI assistants & ElasticSearch
+const openAIApiKey = process.env.OPENAI_API_KEY; // Replace with your API key or use environment variable
+if (!openAIApiKey) {
+  console.error('OpenAI API key is required');
+  process.exit(1);
+}
+
+const modelName = 'gpt-3.5-turbo-1106'; // gpt-4
+
+const model = new ChatOpenAI({ modelName: modelName }).pipe(
+  new StringOutputParser(),
+);
 
 const embeddings = new OpenAIEmbeddings();
 
@@ -23,7 +45,10 @@ const config: ClientOptions = {
 };
 const clientArgs: ElasticClientArgs = {
   client: new Client(config),
-  indexName: process.env.ELASTIC_INDEX ?? 'test_vectorstore2',
+  indexName: process.env.ELASTIC_INDEX ?? 'test_vectorstore4',
+  vectorSearchOptions: {
+    similarity: 'cosine', // since this is what openAI uses
+  },
 };
 
 app.command('/kb', async ({ ack, payload, context, say }) => {
@@ -66,26 +91,73 @@ const getResponse = async (query: string) => {
     clientArgs,
   );
 
-  console.log('searching for ', query);
+  const combineDocumentsPrompt = ChatPromptTemplate.fromMessages([
+    AIMessagePromptTemplate.fromTemplate(
+      "Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.\n\n{context}\n\n",
+    ),
+    HumanMessagePromptTemplate.fromTemplate('Question: {question}'),
+  ]);
 
-  // use db to retrieve matches
-  const searchResults = await search.similaritySearchWithScore(query, 3);
+  // array of kb numbers that are relevant
+  let kbDocs: KbDocument[] = [];
 
-  console.log('searchResults', JSON.stringify(searchResults, null, 2));
+  const combineDocumentsChain = RunnableSequence.from([
+    {
+      question: (output: string) => output,
+      context: async (output: string) => {
+        const relevantDocs = await search
+          .asRetriever({
+            k: 5,
+          })
+          .getRelevantDocuments(output);
 
-  // pull out the kbIds
-  const kbIds: string[] = searchResults.map(
-    (result) => result[0].metadata.id as string,
-  );
+        kbDocs = relevantDocs.map((doc) => ({
+          id: doc.metadata.id,
+          title: doc.metadata.title,
+        }));
 
-  console.log('kbIds', kbIds);
+        console.log('relevantDocs', relevantDocs);
+        // console.log(
+        //   'relevantDocs as string',
+        //   formatDocumentsAsString(relevantDocs),
+        // );
+        console.log(
+          'combined prompt',
+          await combineDocumentsPrompt.invoke({
+            context: formatDocumentsAsString(relevantDocs),
+            question: query,
+          }),
+        );
+        return formatDocumentsAsString(relevantDocs);
+      },
+    },
+    combineDocumentsPrompt,
+    model,
+    new StringOutputParser(),
+  ]);
 
-  // remove dupes
-  const uniqueIds = [...new Set(kbIds)];
+  const result = await combineDocumentsChain.invoke(query);
 
-  console.log('uniqueIds', uniqueIds);
+  const uniqueIds = new Set();
+  kbDocs = kbDocs.filter((doc) => {
+    if (!uniqueIds.has(doc.id)) {
+      uniqueIds.add(doc.id);
+      return true;
+    }
+    return false;
+  });
 
-  return 'text';
+  const getKbLink = (kbNumber: string) => {
+    return `https://servicehub.ucdavis.edu/servicehub?id=ucd_kb_article&sysparm_article=${kbNumber}`;
+  };
+
+  const resultWithLinks =
+    result +
+    '\n\n' +
+    'Relevant KB Articles: \n\n' +
+    kbDocs.map((doc) => `<${getKbLink(doc.id)}|${doc.title}>`).join('\n');
+
+  return resultWithLinks;
 };
 
 (async () => {
@@ -95,3 +167,10 @@ const getResponse = async (query: string) => {
 
   console.log(`⚡️ Bolt app is running at ${port}`);
 })();
+
+interface KbDocument {
+  id: string;
+  title: string;
+  htmlContent?: string;
+  text?: string;
+}
