@@ -70,7 +70,6 @@ app.command('/kb', async ({ ack, payload, context, say }) => {
     if (messageInitial.ok && messageInitial.ts) {
       // get ask our AI
       const response = await getResponse(payloadText);
-      await new Promise((r) => setTimeout(r, 2000));
 
       await app.client.chat.update({
         token: context.botToken,
