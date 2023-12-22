@@ -19,7 +19,11 @@ const bolt_1 = require("@slack/bolt");
 const dotenv_1 = __importDefault(require("dotenv"));
 const openai_1 = require("langchain/embeddings/openai");
 const elasticsearch_2 = require("langchain/vectorstores/elasticsearch");
-const openai_2 = __importDefault(require("openai"));
+const openai_2 = require("langchain/chat_models/openai");
+const output_parser_1 = require("langchain/schema/output_parser");
+const prompts_1 = require("langchain/prompts");
+const runnable_1 = require("langchain/schema/runnable");
+;
 dotenv_1.default.config();
 const app = new bolt_1.App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -31,7 +35,8 @@ if (!openAIApiKey) {
     console.error('OpenAI API key is required');
     process.exit(1);
 }
-const openai = new openai_2.default();
+const modelName = 'gpt-3.5-turbo-1106'; // gpt-4
+const model = new openai_2.ChatOpenAI({ modelName: modelName }).pipe(new output_parser_1.StringOutputParser());
 const embeddings = new openai_1.OpenAIEmbeddings();
 // get my vector store
 const config = {
@@ -39,29 +44,28 @@ const config = {
 };
 const clientArgs = {
     client: new elasticsearch_1.Client(config),
-    indexName: (_b = process.env.ELASTIC_INDEX) !== null && _b !== void 0 ? _b : 'test_vectorstore2',
+    indexName: (_b = process.env.ELASTIC_INDEX) !== null && _b !== void 0 ? _b : 'test_vectorstore4',
+    vectorSearchOptions: {
+        similarity: 'cosine', // since this is what openAI uses
+    },
 };
-app.command('/kb', ({ ack, payload, context, say }) => __awaiter(void 0, void 0, void 0, function* () {
+app.command('/kb', ({ ack, payload, respond }) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         yield ack();
         const payloadText = payload.text;
         if (!payloadText) {
-            yield say('You can ask me anything about the knowledge base. ex: /kb how to create a new user?');
+            yield respond('You can ask me anything about the knowledge base. ex: /kb how to create a new user?');
             return;
         }
         // send a message using chat.postMessage
-        const messageInitial = yield say('Querying the knowledge base...');
-        if (messageInitial.ok && messageInitial.ts) {
-            // get ask our AI
-            const response = yield getResponse(payloadText);
-            yield new Promise((r) => setTimeout(r, 2000));
-            yield app.client.chat.update({
-                token: context.botToken,
-                channel: payload.channel_id,
-                ts: messageInitial.ts,
-                text: response,
-            });
-        }
+        yield respond('Querying the knowledge base...');
+        // get ask our AI
+        const response = yield getResponse(payloadText);
+        // const response = 'testing';
+        // update the message with the response
+        yield respond({
+            text: response,
+        });
     }
     catch (error) {
         console.error(error);
@@ -70,31 +74,60 @@ app.command('/kb', ({ ack, payload, context, say }) => __awaiter(void 0, void 0,
 const getResponse = (query) => __awaiter(void 0, void 0, void 0, function* () {
     // assume the index is already created
     const search = yield elasticsearch_2.ElasticVectorSearch.fromExistingIndex(embeddings, clientArgs);
-    console.log('searching for ', query);
-    // use db to retrieve matches
-    const searchResults = yield search.similaritySearchWithScore(query, 3);
-    console.log('searchResults', JSON.stringify(searchResults, null, 2));
-    // pull out the kbIds
-    const kbIds = searchResults.map((result) => result[0].metadata.id);
-    console.log('kbIds', kbIds);
-    // remove dupes
-    const uniqueIds = [...new Set(kbIds)];
-    console.log('uniqueIds', uniqueIds);
-    const systemPrompt = 'You are a helpful assistant to staff at the University of California, Davis.  Use the provided context to produce your answers, and if you are not able to answer from these files then say you do not know. ' +
-        'Context: ' +
-        searchResults.map((result) => result[0].pageContent).join(' ');
-    return systemPrompt;
-    //   const completion = await openai.chat.completions.create({
-    //     messages: [
-    //       {
-    //         role: 'system',
-    //         content: systemPrompt,
-    //       },
-    //       { role: 'user', content: query },
-    //     ],
-    //     model: 'gpt-3.5-turbo',
-    //   });
-    //   return completion.choices[0].message.content;
+    const combineDocumentsPrompt = prompts_1.ChatPromptTemplate.fromMessages([
+        prompts_1.AIMessagePromptTemplate.fromTemplate(`You will be provided with documents delimited by triple quotes and a question. 
+      Your task is to answer the question using only the provided documents and to cite the passage(s) of the documents used to answer the question. 
+      If the documents do not contain the information needed to answer this question then simply write: "Insufficient information." 
+      If an answer to the question is provided, it must be annotated with citations. Use the following format for to cite relevant passages ({"citation": …, "url": ...}).
+      \n\n{context}
+      `),
+        prompts_1.HumanMessagePromptTemplate.fromTemplate('Question: {question}'),
+    ]);
+    // array of kb numbers that are relevant
+    let kbDocs = [];
+    const combineDocumentsChain = runnable_1.RunnableSequence.from([
+        {
+            question: (output) => output,
+            context: (output) => __awaiter(void 0, void 0, void 0, function* () {
+                const relevantDocs = yield search
+                    .asRetriever({
+                    k: 5,
+                })
+                    .getRelevantDocuments(output);
+                kbDocs = relevantDocs.map((doc) => ({
+                    id: doc.metadata.id,
+                    title: doc.metadata.title,
+                }));
+                console.log('relevantDocs', relevantDocs);
+                // Each document should be delimited by triple quotes and then note the excerpt of the document
+                const docText = relevantDocs.map((doc) => {
+                    return `"""${doc.metadata.title}\n\n-Excerpted from "${doc.metadata.title}" at ${getKbLink(doc.metadata.id)}"""`;
+                });
+                console.log('docText', docText);
+                return docText.join('\n\n');
+            }),
+        },
+        combineDocumentsPrompt,
+        model,
+        new output_parser_1.StringOutputParser(),
+    ]);
+    const result = yield combineDocumentsChain.invoke(query);
+    const uniqueIds = new Set();
+    kbDocs = kbDocs.filter((doc) => {
+        if (!uniqueIds.has(doc.id)) {
+            uniqueIds.add(doc.id);
+            return true;
+        }
+        return false;
+    });
+    const getKbLink = (kbNumber) => {
+        return `https://servicehub.ucdavis.edu/servicehub?id=ucd_kb_article&sysparm_article=${kbNumber}`;
+    };
+    const resultWithLinks = result +
+        '\n\n' +
+        'Relevant KB Articles: \n\n' +
+        kbDocs.map((doc) => `<${getKbLink(doc.id)}|${doc.title}>`).join('\n');
+    return resultWithLinks;
 });
 (() => __awaiter(void 0, void 0, void 0, function* () {
     // Start your app
