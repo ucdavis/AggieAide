@@ -17,14 +17,14 @@ steps:
     npm run build
   displayName: 'npm install and build'
 
-# Copy files to the staging directory
-- task: CopyFiles@2
+# zip the source folder and stick it into the artifact directory
+- task: ArchiveFiles@2
   inputs:
-    SourceFolder: '$(Build.SourcesDirectory)'
-    Contents: |
-      **
-      dist/**
-    TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    rootFolderOrFile: '$(Build.SourcesDirectory)'
+    includeRootFolder: true
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+    replaceExistingArchive: true
 
 - task: PublishBuildArtifacts@1
   inputs:
