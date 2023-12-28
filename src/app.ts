@@ -83,7 +83,7 @@ const handleSlashCommand = async ({
     const response = await getResponse(payloadText, modelName);
 
     // get back our structured response
-    console.log('response', response);
+    // console.log('response', response);
 
     // convert to slack blocks
     const blocks = convertToBlocks(response);
@@ -247,7 +247,7 @@ const getResponse = async (query: string, modelName: string) => {
   // get the most recent message
   const responseMessage = response.choices[0].message;
 
-  console.log('responseMessage', responseMessage);
+  // console.log('responseMessage', responseMessage);
 
   // Step 2: check if the model wanted to call a function
   const toolCalls = responseMessage.tool_calls;
