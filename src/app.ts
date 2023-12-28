@@ -1,22 +1,24 @@
 // Require the Bolt package (github.com/slackapi/bolt)
 import { Client, ClientOptions } from '@elastic/elasticsearch';
-import { App } from '@slack/bolt';
+import {
+  App,
+  AckFn,
+  RespondArguments,
+  SlashCommand,
+  RespondFn,
+} from '@slack/bolt';
 import dotenv from 'dotenv';
 import { OpenAIEmbeddings } from 'langchain/embeddings/openai';
 import {
   ElasticClientArgs,
   ElasticVectorSearch,
 } from 'langchain/vectorstores/elasticsearch';
-import { ChatOpenAI } from 'langchain/chat_models/openai';
-import { StringOutputParser } from 'langchain/schema/output_parser';
-import {
-  ChatPromptTemplate,
-  AIMessagePromptTemplate,
-  HumanMessagePromptTemplate,
-} from 'langchain/prompts';
-import { RunnableSequence } from 'langchain/schema/runnable';
+import OpenAI from 'openai';
+import { ChatCompletionTool } from 'openai/resources/chat/completions';
 
 dotenv.config();
+
+const openai = new OpenAI();
 
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
@@ -30,20 +32,13 @@ if (!openAIApiKey) {
   process.exit(1);
 }
 
-// const modelName = 'gpt-3.5-turbo-1106';
-// const modelName = 'gpt-4';
-const modelName = 'gpt-4-1106-preview'; // GPT-4 Turbo
-
-const model = new ChatOpenAI({
-  modelName: modelName,
-}).pipe(new StringOutputParser());
-
 const embeddings = new OpenAIEmbeddings();
 
 // get my vector store
 const config: ClientOptions = {
   node: process.env.ELASTIC_URL ?? 'http://127.0.0.1:9200',
 };
+
 const clientArgs: ElasticClientArgs = {
   client: new Client(config),
   indexName: process.env.ELASTIC_INDEX ?? 'test_vectorstore4',
@@ -52,7 +47,17 @@ const clientArgs: ElasticClientArgs = {
   },
 };
 
-app.command('/kb', async ({ ack, payload, respond }) => {
+const handleSlashCommand = async ({
+  ack,
+  payload,
+  respond,
+  modelName,
+}: {
+  ack: AckFn<string | RespondArguments>;
+  payload: SlashCommand;
+  respond: RespondFn;
+  modelName: string;
+}) => {
   try {
     await ack();
 
@@ -67,14 +72,16 @@ app.command('/kb', async ({ ack, payload, respond }) => {
 
     // send a message using chat.postMessage
     await respond(
-      'Knowledge Base Bot v0.1-beta by Scott Kirkland. gpt-4, elastic search dense vector + cosine, recursive character vectorization. Getting an answer to your question...',
+      `Knowledge Base Bot v0.1-beta by Scott Kirkland. model ${modelName}, elastic search dense vector + cosine, recursive character vectorization. Getting an answer to your question...`,
     );
 
     // get ask our AI
-    const response = await getResponse(payloadText);
+    const response = await getResponse(payloadText, modelName);
 
+    // get back our structured response
     console.log('response', response);
 
+    // convert to slack blocks
     const blocks = convertToBlocks(response);
 
     // update the message with the response
@@ -84,67 +91,52 @@ app.command('/kb', async ({ ack, payload, respond }) => {
   } catch (error) {
     console.error(error);
   }
-});
-
-// Function to extract and deduplicate JSON sections
-const extractAndDeduplicateJSONSections = (text: string) => {
-  try {
-    const regex = /{[^}]*}/g;
-    const allMatches = text.match(regex) || [];
-    const uniqueJSONObjects = new Map();
-
-    allMatches.forEach((jsonString) => {
-      // strip out all the newlines and other whitespace
-      jsonString = jsonString.replace(/(\r\n|\n|\r)/gm, '');
-      jsonString = jsonString.replace(/\s+/g, ' ');
-      console.log('jsonString', jsonString);
-      const jsonObject = JSON.parse(jsonString);
-      uniqueJSONObjects.set(jsonObject.url, jsonObject);
-    });
-
-    return Array.from(uniqueJSONObjects.values());
-  } catch (error) {
-    console.error(error);
-    return [];
-  }
 };
 
-const convertToBlocks = (text: string) => {
-  // Extract the JSON sections and remove duplicates
-  const citations = extractAndDeduplicateJSONSections(text);
+app.command('/kb3', async ({ ack, payload, respond }) => {
+  const modelName = 'gpt-3.5-turbo-1106';
 
-  // Remove JSON sections from main text
-  const mainText = text.replace(/{[^}]*}/g, '').trim();
+  await handleSlashCommand({ ack, payload, respond, modelName });
+});
 
+app.command('/kb', async ({ ack, payload, respond }) => {
+  const modelName = 'gpt-4-1106-preview'; // GPT-4 Turbo
+
+  await handleSlashCommand({ ack, payload, respond, modelName });
+});
+
+const convertToBlocks = (content: AnswerQuestionFunctionArgs[]) => {
   // Constructing Slack message blocks
-  const messageBlocks = [
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: mainText,
-      },
-    },
-  ];
+  const messageBlocks = [];
 
-  if (citations.length > 0) {
+  for (const answer of content) {
     messageBlocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*Citations*',
+        text: answer.content,
       },
     });
 
-    citations.forEach((citation) => {
+    if (answer.citations.length > 0) {
       messageBlocks.push({
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `<${citation.url}|${citation.title}>`,
+          text: '*Citations*',
         },
       });
-    });
+
+      answer.citations.forEach((citation) => {
+        messageBlocks.push({
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `<${citation.url}|${citation.title}>`,
+          },
+        });
+      });
+    }
   }
 
   return messageBlocks;
@@ -159,65 +151,121 @@ const cleanupTitle = (title: string) => {
   return title.replace(/"/g, '');
 };
 
-const getResponse = async (query: string) => {
+const getResponse = async (query: string, modelName: string) => {
   // assume the index is already created
   const search = await ElasticVectorSearch.fromExistingIndex(
     embeddings,
     clientArgs,
   );
 
-  const combineDocumentsPrompt = ChatPromptTemplate.fromMessages([
-    AIMessagePromptTemplate.fromTemplate(
-      `You will be provided with several documents each delimited by triple quotes and then a question. 
-      Your task is to answer the question using only the provided documents and to cite the the documents used to answer the question. 
-      If the documents do not contain the information needed to answer this question then simply write: "Insufficient information to answer this question." 
-      If an answer to the question is provided, it must be annotated by citing the title and url. Use the following format for to cite relevant passages ({{"title": ..., "url": ... }}).
-      \n\n{context}
-      `,
-    ),
-    HumanMessagePromptTemplate.fromTemplate('Question: {question}'),
-  ]);
+  // get our search results
+  // TODO: can use similarity score to filter out low confidence results
+  const relevantDocs = await search.similaritySearchWithScore(query, 5);
 
-  // array of kb numbers that are relevant
-  // let kbDocs: KbDocument[] = [];
+  // result is array of arrays, with each array containing the document [0] and the similarity score [1]
 
-  const combineDocumentsChain = RunnableSequence.from([
+  // console.log('relevantDocs', relevantDocs);
+
+  // Each document should be delimited by triple quotes and then note the excerpt of the document
+  const docText = relevantDocs.map((docWithScore) => {
+    const doc = docWithScore[0];
+    return `"""${doc.pageContent}\n\n-from <${getKbLink(
+      doc.metadata.id,
+    )}|${cleanupTitle(doc.metadata.title)}>"""`;
+  });
+
+  // console.log('docText', docText);
+
+  // construct our tool function which defines the expected output structure
+  const tools: ChatCompletionTool[] = [
     {
-      question: (output: string) => output,
-      context: async (output: string) => {
-        const relevantDocs = await search
-          .asRetriever({
-            k: 5,
-          })
-          .getRelevantDocuments(output);
-
-        // kbDocs = relevantDocs.map((doc) => ({
-        //   id: doc.metadata.id,
-        //   title: doc.metadata.title,
-        // }));
-
-        console.log('relevantDocs', relevantDocs);
-
-        // Each document should be delimited by triple quotes and then note the excerpt of the document
-        const docText = relevantDocs.map((doc) => {
-          return `"""${doc.pageContent}\n\n-from <${getKbLink(
-            doc.metadata.id,
-          )}|${cleanupTitle(doc.metadata.title)}>"""`;
-        });
-
-        console.log('docText', docText);
-
-        return docText.join('\n\n');
+      type: 'function',
+      function: {
+        name: 'answer_question',
+        description: 'Answer a question and provide citations',
+        parameters: {
+          $schema: 'http://json-schema.org/draft-07/schema#',
+          type: 'object',
+          properties: {
+            content: {
+              type: 'string',
+              description:
+                'The content of the answer to the question, in markdown format',
+            },
+            citations: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: {
+                    type: 'string',
+                    description: 'The title of the document cited',
+                  },
+                  url: {
+                    type: 'string',
+                    format: 'uri',
+                    description: 'The url of the document cited',
+                  },
+                },
+                required: ['title', 'url'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['content', 'citations'],
+          additionalProperties: false,
+        },
       },
     },
-    combineDocumentsPrompt,
-    model,
-    new StringOutputParser(),
-  ]);
+  ];
 
-  const result = await combineDocumentsChain.invoke(query);
+  const response = await openai.chat.completions.create({
+    model: modelName,
+    messages: [
+      {
+        role: 'system',
+        content: `
+        You are a helpful assitant and will be provided with several documents each delimited by triple quotes and then asked a question.
+      Your task is to answer the question in nicely formatted markdown using only the provided documents and to cite the the documents used to answer the question. 
+      If the documents do not contain the information needed to answer this question then simply write: "Insufficient information to answer this question." 
+      If an answer to the question is provided, it must be annotated with a citation. Only call 'answer_question' once after your entire answer has been formulated. \n\n ${docText}`,
+      },
+      {
+        role: 'user',
+        content: 'Question: ' + query,
+      },
+    ],
+    temperature: 0.2, // play with this to get more consistent results
+    tools: tools,
+    tool_choice: { type: 'function', function: { name: 'answer_question' } },
+  });
 
-  return result;
+  // get the most recent message
+  const responseMessage = response.choices[0].message;
+
+  console.log('responseMessage', responseMessage);
+
+  // Step 2: check if the model wanted to call a function
+  const toolCalls = responseMessage.tool_calls;
+
+  if (toolCalls) {
+    // we have a tool call. should only be one but let's loop anyway and build up our response
+    // console.log('toolCalls', toolCalls);
+    return toolCalls.map((toolCall) => {
+      return JSON.parse(
+        toolCall.function.arguments,
+      ) as AnswerQuestionFunctionArgs;
+    });
+  } else {
+    // our function wasn't called -- don't think that should happen?
+    return [
+      {
+        content:
+          'sorry, something went wrong trying to answer your question.  Please try again.',
+        citations: [],
+      },
+    ];
+  }
 };
 
 (async () => {
@@ -228,9 +276,10 @@ const getResponse = async (query: string) => {
   console.log(`⚡️ Bolt app is running at ${port}`);
 })();
 
-// interface KbDocument {
-//   id: string;
-//   title: string;
-//   htmlContent?: string;
-//   text?: string;
-// }
+interface AnswerQuestionFunctionArgs {
+  content: string;
+  citations: {
+    title: string;
+    url: string;
+  }[];
+}
