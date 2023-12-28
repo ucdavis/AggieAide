@@ -37,6 +37,10 @@ const embeddings = new OpenAIEmbeddings();
 // get my vector store
 const config: ClientOptions = {
   node: process.env.ELASTIC_URL ?? 'http://127.0.0.1:9200',
+  auth: {
+    username: process.env.ELASTIC_SEARCHER_USERNAME ?? 'elastic',
+    password: process.env.ELASTIC_SEARCHER_PASSWORD ?? 'changeme',
+  },
 };
 
 const clientArgs: ElasticClientArgs = {

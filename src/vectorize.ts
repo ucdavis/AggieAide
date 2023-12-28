@@ -22,12 +22,21 @@ if (!apiKey) {
 const embeddings = new OpenAIEmbeddings();
 
 // get my vector store
+// const config: ClientOptions = {
+//   node: process.env.ELASTIC_URL ?? 'http://127.0.0.1:9200',
+// };
+
 const config: ClientOptions = {
   node: process.env.ELASTIC_URL ?? 'http://127.0.0.1:9200',
+  auth: {
+    username: process.env.ELASTIC_WRITE_USERNAME ?? 'elastic',
+    password: process.env.ELASTIC_WRITE_PASSWORD ?? 'changeme',
+  },
 };
+
 const clientArgs: ElasticClientArgs = {
   client: new Client(config),
-  indexName: process.env.ELASTIC_INDEX ?? 'test_vectorstore4',
+  indexName: process.env.ELASTIC_INDEX ?? 'kb_vectorstore',
   vectorSearchOptions: {
     similarity: 'cosine', // since this is what openAI uses
   },
