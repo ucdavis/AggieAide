@@ -76,7 +76,7 @@ const handleSlashCommand = async ({
 
     // send a message using chat.postMessage
     await respond(
-      `Knowledge Base Bot v0.1-beta by Scott Kirkland. model ${modelName}, elastic search dense vector + cosine, recursive character vectorization. Getting an answer to your question...`,
+      `Knowledge Base Bot v0.1-beta by Scott Kirkland. model ${modelName}, elastic search dense vector + cosine, recursive character vectorization. \n\n You asked me: '${payloadText}'. Getting an answer to your question...`,
     );
 
     // get ask our AI
