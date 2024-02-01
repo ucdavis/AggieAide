@@ -20,6 +20,10 @@ dotenv.config();
 
 const openai = new OpenAI();
 
+// define our models to use
+const model4 = 'gpt-4-0125-preview'; // GPT-4 Turbo
+const model3 = 'gpt-3.5-turbo-0125'; // GPT-3.5 Turbo
+
 let app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
@@ -61,6 +65,49 @@ const clientArgs: ElasticClientArgs = {
   },
 };
 
+// mentions
+app.event('app_mention', async ({ event, client }) => {
+  const modelName = model3; // use gpt3 for testing
+
+  try {
+    // First, react to the mention with an emoji
+    await client.reactions.add({
+      channel: event.channel,
+      name: 'eyes', // Emoji code, replace 'eyes' with the emoji you want to use without colons
+      timestamp: event.ts,
+    });
+
+    // get the payload text
+    const payloadText = event.text;
+
+    const responseText = generateInitialResponseText(modelName, payloadText);
+
+    // Reply in a thread
+    await client.chat.postMessage({
+      channel: event.channel,
+      text: responseText,
+      thread_ts: event.ts, // This is crucial, as it starts the thread by using the timestamp of the event message
+    });
+
+    // get ask our AI
+    const response = await getResponse(payloadText, modelName);
+
+    // convert to slack blocks
+    const blocks = convertToBlocks(response);
+
+    // Post another message in the thread after the API call
+    await client.chat.postMessage({
+      channel: event.channel,
+      blocks: blocks,
+      text: convertToText(response),
+      thread_ts: event.ts,
+    });
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+// slash commands
 const handleSlashCommand = async ({
   ack,
   payload,
@@ -85,9 +132,7 @@ const handleSlashCommand = async ({
     }
 
     // send a message using chat.postMessage
-    await respond(
-      `Knowledge Base Bot v0.1-beta by Scott Kirkland. model ${modelName}, elastic search dense vector + cosine, recursive character vectorization. \n\n You asked me: '${payloadText}'. Getting an answer to your question...`,
-    );
+    await respond(generateInitialResponseText(modelName, payloadText));
 
     // get ask our AI
     const response = await getResponse(payloadText, modelName);
@@ -108,16 +153,27 @@ const handleSlashCommand = async ({
 };
 
 app.command('/kb3', async ({ ack, payload, respond }) => {
-  const modelName = 'gpt-3.5-turbo-1106';
-
-  await handleSlashCommand({ ack, payload, respond, modelName });
+  await handleSlashCommand({ ack, payload, respond, modelName: model3 });
 });
 
 app.command('/kb', async ({ ack, payload, respond }) => {
-  const modelName = 'gpt-4-1106-preview'; // GPT-4 Turbo
-
-  await handleSlashCommand({ ack, payload, respond, modelName });
+  await handleSlashCommand({ ack, payload, respond, modelName: model4 });
 });
+
+// just in case we can't render with blocks
+const convertToText = (content: AnswerQuestionFunctionArgs[]) => {
+  let message = '';
+  for (const answer of content) {
+    message += answer.content + '\n\n';
+    if (answer.citations.length > 0) {
+      message += '*Citations*\n';
+      answer.citations.forEach((citation) => {
+        message += `<${citation.url}|${citation.title}>\n`;
+      });
+    }
+  }
+  return message;
+};
 
 const convertToBlocks = (content: AnswerQuestionFunctionArgs[]) => {
   // Constructing Slack message blocks
@@ -155,6 +211,13 @@ const convertToBlocks = (content: AnswerQuestionFunctionArgs[]) => {
   }
 
   return messageBlocks;
+};
+
+const generateInitialResponseText = (
+  modelName: string,
+  payloadText: string,
+) => {
+  return `Knowledge Base Bot v0.1-beta by Scott Kirkland. model ${modelName}, elastic search dense vector + cosine, recursive character vectorization. \n\n You asked me: '${payloadText}'. Getting an answer to your question...`;
 };
 
 const getKbLink = (kbNumber: string) => {
