@@ -20,10 +20,20 @@ dotenv.config();
 
 const openai = new OpenAI();
 
-const app = new App({
+let app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
+
+// if we have an app token, we want to use it and socket mode
+// this is for local development only
+if (process.env.SLACK_APP_TOKEN) {
+  app = new App({
+    token: process.env.SLACK_BOT_TOKEN,
+    appToken: process.env.SLACK_APP_TOKEN,
+    socketMode: true,
+  });
+}
 
 // let's try to do full RAG with OpenAI assistants & ElasticSearch
 const openAIApiKey = process.env.OPENAI_API_KEY; // Replace with your API key or use environment variable
@@ -114,11 +124,12 @@ const convertToBlocks = (content: AnswerQuestionFunctionArgs[]) => {
   const messageBlocks = [];
 
   for (const answer of content) {
+    const cleanedAnswerContent = cleanupContent(answer.content);
     messageBlocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: answer.content,
+        text: cleanedAnswerContent,
       },
     });
 
@@ -155,6 +166,10 @@ const cleanupTitle = (title: string) => {
   return title.replace(/"/g, '');
 };
 
+const cleanupContent = (content: string) => {
+  // if we find any markdown links [title](url), replace them with the special slack format <url|title>
+  return content.replace(/\[(.*?)\]\((.*?)\)/g, '<$2|$1>');
+};
 const getResponse = async (query: string, modelName: string) => {
   // assume the index is already created
   const search = await ElasticVectorSearch.fromExistingIndex(
