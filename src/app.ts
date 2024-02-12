@@ -220,10 +220,6 @@ const generateInitialResponseText = (
   return `Knowledge Base Bot v0.1-beta by Scott Kirkland. model ${modelName}, elastic search dense vector + cosine, recursive character vectorization. \n\n You asked me: '${payloadText}'. Getting an answer to your question...`;
 };
 
-const getKbLink = (kbNumber: string) => {
-  return `https://servicehub.ucdavis.edu/servicehub?id=ucd_kb_article&sysparm_article=${kbNumber}`;
-};
-
 const cleanupTitle = (title: string) => {
   // replace any quotes
   return title.replace(/"/g, '');
@@ -251,9 +247,9 @@ const getResponse = async (query: string, modelName: string) => {
   // Each document should be delimited by triple quotes and then note the excerpt of the document
   const docText = relevantDocs.map((docWithScore) => {
     const doc = docWithScore[0];
-    return `"""${doc.pageContent}\n\n-from <${getKbLink(
-      doc.metadata.id,
-    )}|${cleanupTitle(doc.metadata.title)}>"""`;
+    return `"""${doc.pageContent}\n\n-from <${doc.metadata.url}|${cleanupTitle(
+      doc.metadata.title,
+    )}>"""`;
   });
 
   // console.log('docText', docText);
