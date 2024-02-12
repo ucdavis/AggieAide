@@ -6,7 +6,8 @@
   "scripts": {
     "start": "nodemon",
     "build": "tsc",
-    "serve": "node ./dist/app.js"
+    "serve": "node ./dist/app.js",
+    "vectorize": "ts-node ./src/vectorize.ts"
   },
   "keywords": [],
   "author": "",
