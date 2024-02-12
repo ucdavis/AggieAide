@@ -67,7 +67,7 @@ const clientArgs: ElasticClientArgs = {
 
 // mentions
 app.event('app_mention', async ({ event, client }) => {
-  const modelName = model3; // use gpt3 for testing
+  const modelName = model4; // default to the latest model
 
   try {
     // First, react to the mention with an emoji
